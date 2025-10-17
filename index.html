@@ -1,0 +1,677 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Extrude Sequencer — Multi Upload + Alternate + Stereo/VR</title>
+<style>
+  :root{ --bg:#0b1220; --panel:#0f1722; --fg:#e6eef6; --muted:#9fb0c7; --accent:#4fc3ff; }
+  html,body{height:100%; margin:0; background:var(--bg); color:var(--fg); font-family:system-ui,-apple-system,Segoe UI,Roboto,Noto Sans;}
+  #ui{position:fixed; left:12px; top:12px; width:410px; max-height:calc(100vh - 24px); overflow:auto;
+      background:var(--panel); border:1px solid #173041; padding:12px; border-radius:10px; box-shadow:0 6px 18px #0009; z-index:60}
+  label{display:block; font-size:13px; color:var(--muted); margin-top:8px}
+  input[type=file]{width:100%}
+  button{margin-top:8px; padding:8px 10px; border-radius:8px; border:none; cursor:pointer; font-weight:600}
+  button.primary{background:linear-gradient(180deg,var(--accent),#0d8fb8); color:#05202b}
+  button.ghost{background:#111827; color:var(--fg); border:1px solid #24323f}
+  .row{display:flex; gap:8px; align-items:center; margin-top:8px; flex-wrap:wrap}
+  .small{font-size:12px; color:var(--muted)}
+  #canvasContainer{width:100%; height:100vh; overflow:hidden}
+  input[type=range]{width:220px}
+  .sliderRow{display:flex; gap:8px; align-items:center}
+  #piecesList{margin-top:8px; display:flex; flex-direction:column; gap:8px; max-height:260px; overflow:auto;
+              padding:6px; border-radius:6px; background:#081018; border:1px solid #16202a;
+              overscroll-behavior:contain; -webkit-overflow-scrolling:touch; touch-action:pan-y}
+  .pieceRow{display:flex; gap:8px; align-items:center; padding:6px; border-radius:8px; border:1px solid #20303f; background:#0a131c}
+  .thumbSmall{width:56px; height:56px; object-fit:cover; background:#000; border-radius:6px; border:1px solid #20303f}
+  .pieceMeta{flex:1; font-size:12px; color:var(--muted)}
+  .pieceBtns{display:flex; gap:6px; align-items:center}
+  .orderBadge{min-width:22px; text-align:center; font-weight:700; color:#05202b; background:linear-gradient(180deg,var(--accent),#0d8fb8); border-radius:6px; padding:2px 6px}
+  #enterVrBtn{position:fixed; right:12px; bottom:12px; z-index:61; padding:10px 12px; border-radius:8px; background:linear-gradient(180deg,var(--accent),#0d8fb8); color:#05202b; font-weight:700; cursor:pointer; border:none}
+  .webxr-button { position: fixed !important; right:12px !important; bottom:72px !important; z-index:62 !important; }
+  .spacer{flex:1}
+</style>
+</head>
+<body>
+  <div id="ui" aria-label="Controls">
+    <h3 style="margin:0 0 6px 0">Extrude Sequencer — Stereo/VR</h3>
+    <div class="small">원본 1개 + 조각 최대 20개 | 순차/교대/양안 | VR</div>
+
+    <label>원본 이미지 (항상 1개만 유지, 새로 올리면 교체)</label>
+    <input id="baseFile" type="file" accept="image/*">
+
+    <label>조각 이미지 업로드 — 여러 개 선택 가능, 최대 20개까지 누적</label>
+    <input id="piecesFiles" type="file" accept="image/*" multiple>
+
+    <div class="row">
+      <button id="btnPlaceAll" class="ghost">Align(원본과 해상도 동일 시 중앙정렬)</button>
+      <button id="btnClear" class="ghost">조각 모두 삭제</button>
+      <div class="spacer"></div>
+      <div class="small">업로드된 조각 목록</div>
+    </div>
+    <div id="piecesList" aria-live="polite"></div>
+
+    <label>Extrusion / Fade</label>
+    <div class="sliderRow">
+      <div class="small">깊이(World units)</div>
+      <input id="popDepth" type="range" min="0.02" max="1.2" step="0.01" value="0.15">
+      <div id="popDepthVal" class="small">0.15</div>
+    </div>
+    <div class="sliderRow">
+      <div class="small">Fade duration (초)</div>
+      <input id="fadeDuration" type="range" min="0.1" max="2.5" step="0.05" value="0.5">
+      <div id="fadeDurationVal" class="small">0.50s</div>
+    </div>
+
+    <label>재생 옵션</label>
+    <div class="row">
+      <button id="btnPlaySeq" class="primary">Play Sequence (Pieces)</button>
+      <label class="small" style="display:flex; align-items:center; gap:6px; margin:0 6px">
+        <input id="seqLoop" type="checkbox" checked> Loop
+      </label>
+      <div class="sliderRow" style="margin-left:4px">
+        <div class="small">간격(초)</div>
+        <input id="seqInterval" type="range" min="0.1" max="5" step="0.1" value="0.6">
+        <div id="seqIntervalVal" class="small">0.60s</div>
+      </div>
+    </div>
+    <div class="row">
+      <button id="btnPlayAlternate" class="ghost">Play Alternate (Base↔Pieces)</button>
+      <button id="btnStop" class="ghost">Stop</button>
+    </div>
+
+    <label>Stereo(양안) · VR</label>
+    <div class="row">
+      <label class="small"><input type="radio" name="eyeMap" value="baseLeft" checked> Base→Left / Pieces→Right</label>
+      <label class="small"><input type="radio" name="eyeMap" value="baseRight"> Base→Right / Pieces→Left</label>
+    </div>
+    <div class="row">
+      <label class="small"><input id="pcSplit" type="checkbox"> PC Split Preview(좌/우 반분 미리보기)</label>
+      <button id="btnPlayStereoAlt" class="ghost">Play Stereo Alternate</button>
+    </div>
+    <div class="small">VR은 HTTPS(또는 localhost)에서만 동작합니다.</div>
+  </div>
+
+  <button id="enterVrBtn">Enter VR</button>
+  <div id="canvasContainer"></div>
+
+<script type="module">
+/* 모듈은 CDN 절대경로 사용 */
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+import { VRButton } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/webxr/VRButton.js';
+
+/* ====== DOM ====== */
+const container = document.getElementById('canvasContainer');
+const piecesListEl = document.getElementById('piecesList');
+const enterVrBtn = document.getElementById('enterVrBtn');
+
+/* ====== Three / XR ====== */
+let renderer, scene, camera;
+let inVR = false;
+
+/* Stereo layers */
+const LAYER_MONO = 0, LAYER_LEFT = 1, LAYER_RIGHT = 2;
+let mapBaseToLeft = true;   // Base→Left ? else Right
+let splitPreview = false;   // PC Split SxS
+
+/* ====== Data ====== */
+let baseMesh = null;
+/** pieces: [{id, group, frontPlane, bodyMesh, texture, pixelW, pixelH, filename, thumbURL}] */
+let pieces = [];
+let animRunning = false;
+
+/* ====== Init ====== */
+initThree();
+hookUI();
+checkWebXRAvailability();
+
+/* ---------- Three.js setup ---------- */
+function initThree(){
+  renderer = new THREE.WebGLRenderer({ antialias:true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.xr.enabled = true;
+  container.appendChild(renderer.domElement);
+
+  // WebXR Button(브라우저 제공 버튼)
+  const btn = VRButton.createButton(renderer, {
+    optionalFeatures: ['local-floor','dom-overlay'],
+    domOverlay: { root: document.body }
+  });
+  btn.classList.add('webxr-button');
+  document.body.appendChild(btn);
+
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a0d10);
+
+  camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.01, 2000);
+  camera.position.set(0,0,1.2);
+
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x222244, 0.9); scene.add(hemi);
+  const dir = new THREE.DirectionalLight(0xffffff, 0.6); dir.position.set(0.5,1,0.5); scene.add(dir);
+
+  window.addEventListener('resize', onWindowResize);
+
+  setNormalLoop();
+
+  // XR session hooks
+  renderer.xr.addEventListener('sessionstart', ()=>{
+    inVR = true;
+    applyEyeLayers();      // 좌/우 카메라 레이어 필터 적용
+  });
+  renderer.xr.addEventListener('sessionend', ()=>{
+    inVR = false;
+    camera.layers.enableAll();
+    setNormalLoop();
+  });
+}
+
+/* ---------- Render loops ---------- */
+function setNormalLoop(){
+  renderer.setScissorTest(false);
+  renderer.setAnimationLoop(()=>{ renderer.render(scene, camera); });
+}
+function setSplitLoop(){
+  renderer.setAnimationLoop(()=>{
+    // 좌/우 반분
+    const w = renderer.domElement.width, h = renderer.domElement.height;
+    renderer.setScissorTest(true);
+
+    // Left half
+    camera.layers.disableAll(); camera.layers.enable(LAYER_LEFT);
+    renderer.setScissor(0,0,w/2,h); renderer.setViewport(0,0,w/2,h);
+    renderer.render(scene, camera);
+
+    // Right half
+    camera.layers.disableAll(); camera.layers.enable(LAYER_RIGHT);
+    renderer.setScissor(w/2,0,w/2,h); renderer.setViewport(w/2,0,w/2,h);
+    renderer.render(scene, camera);
+
+    renderer.setScissorTest(false);
+  });
+}
+
+/* ---------- Helpers ---------- */
+function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
+function onWindowResize(){ camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); }
+function disposeMaterial(m){ try{ if(m.map) m.map.dispose(); m.dispose(); }catch(e){} }
+function makeThumbDataURL(bitmap, targetW=128){
+  const sx = targetW;
+  const sy = Math.max(1, Math.round(bitmap.height*(targetW/bitmap.width)));
+  const c=document.createElement('canvas'); c.width=sx; c.height=sy;
+  const ctx=c.getContext('2d'); ctx.clearRect(0,0,sx,sy); ctx.drawImage(bitmap,0,0,sx,sy);
+  return c.toDataURL();
+}
+function cryptoRandomId(){
+  try{
+    return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g,c=>
+      (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+    );
+  }catch(e){ return String(Date.now()) + Math.random().toString(36).slice(2,8); }
+}
+async function loadImageBitmap(file){
+  try { return await createImageBitmap(file); }
+  catch(e){
+    return new Promise((resolve,reject)=>{
+      const img = new Image();
+      img.onload = ()=> resolve(createImageBitmap(img));
+      img.onerror = reject;
+      img.src = URL.createObjectURL(file);
+    });
+  }
+}
+
+/* ---------- Base (always 1) ---------- */
+async function setBaseImage(file){
+  try{
+    const bmp = await loadImageBitmap(file);
+
+    if(baseMesh){
+      scene.remove(baseMesh);
+      disposeMaterial(baseMesh.material);
+      baseMesh.geometry.dispose();
+      baseMesh = null;
+    }
+
+    const tex = new THREE.Texture(bmp);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.needsUpdate = true;
+
+    const W = bmp.width, H = bmp.height;
+    const worldLong = 1.6;
+    const scale = worldLong / Math.max(W,H);
+    const geo = new THREE.PlaneGeometry(W*scale, H*scale);
+    const mat = new THREE.MeshStandardMaterial({ map: tex, roughness:0.85, metalness:0.0, side: THREE.DoubleSide, transparent:true, opacity:1 });
+    baseMesh = new THREE.Mesh(geo, mat);
+    baseMesh.userData = { pixelWidth: W, pixelHeight: H, worldWidth: W*scale, worldHeight: H*scale, scale };
+    baseMesh.layers.set(LAYER_MONO);
+    baseMesh.visible = true;
+    scene.add(baseMesh);
+
+    const fitZ = Math.max(W*scale, H*scale) / Math.tan(THREE.MathUtils.degToRad(camera.fov/2));
+    camera.position.set(0,0, Math.max(0.8, fitZ*0.7));
+  }catch(err){ console.error('setBaseImage error', err); alert('원본 이미지 로드 실패 — 콘솔 확인'); }
+}
+
+/* ---------- Pieces (max 20) ---------- */
+async function addPieceFile(file){
+  if(pieces.length >= 20){ alert('최대 20개 조각입니다. 일부를 삭제하세요.'); return; }
+  try{
+    const bmp = await loadImageBitmap(file);
+    const tex = new THREE.Texture(bmp);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.needsUpdate = true;
+
+    // world size (base 비례)
+    let worldW, worldH, s;
+    if(baseMesh){ s = baseMesh.userData.scale; }
+    else { const long = Math.max(bmp.width, bmp.height); s = 1.0/long; }
+    worldW = bmp.width  * s;
+    worldH = bmp.height * s;
+
+    // extrude: 박스 + 앞면
+    const depthWorld = Math.max(0.001, parseFloat(document.getElementById('popDepth').value) * (baseMesh ? baseMesh.userData.worldWidth : 1));
+    const bodyGeo = new THREE.BoxGeometry(worldW, worldH, depthWorld);
+    const bodyMat = new THREE.MeshStandardMaterial({ color:0x111111, roughness:0.95, transparent:true, opacity:1 });
+    const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
+
+    const frontGeo = new THREE.PlaneGeometry(worldW, worldH);
+    const frontMat = new THREE.MeshStandardMaterial({ map: tex, transparent:true, alphaTest:0.02, side: THREE.DoubleSide, opacity:1 });
+    const frontPlane = new THREE.Mesh(frontGeo, frontMat);
+    frontPlane.position.z = depthWorld/2 + 0.001;
+
+    const group = new THREE.Group();
+    group.add(bodyMesh);
+    group.add(frontPlane);
+    group.position.set(0,0, 0.001 + pieces.length*0.0004);
+    group.layers.set(LAYER_MONO);
+    scene.add(group);
+
+    const thumbURL = makeThumbDataURL(bmp, 128);
+    const entry = {
+      id: cryptoRandomId(), group, frontPlane, bodyMesh, texture: tex,
+      pixelW: bmp.width, pixelH: bmp.height, filename: file.name, thumbURL
+    };
+
+    pieces.push(entry);
+    addPieceListItem(entry);
+    refreshOrderBadges();
+  }catch(err){ console.error('addPieceFile error', err); alert('조각 처리 중 오류 — 콘솔 확인'); }
+}
+
+/* ---------- List UI ---------- */
+function addPieceListItem(entry){
+  const div=document.createElement('div'); div.className='pieceRow'; div.id='piece-'+entry.id;
+
+  const order=document.createElement('div'); order.className='orderBadge'; order.textContent='—';
+  const img=document.createElement('img'); img.className='thumbSmall'; img.src=entry.thumbURL;
+
+  const meta=document.createElement('div'); meta.className='pieceMeta';
+  meta.innerHTML=`<div style="font-weight:700">${entry.filename}</div><div class="small">${entry.pixelW}×${entry.pixelH}</div>`;
+
+  const btns=document.createElement('div'); btns.className='pieceBtns';
+
+  const upBtn=document.createElement('button'); upBtn.textContent='↑'; upBtn.className='ghost';
+  upBtn.addEventListener('click', ()=> movePiece(entry.id, -1));
+
+  const downBtn=document.createElement('button'); downBtn.textContent='↓'; downBtn.className='ghost';
+  downBtn.addEventListener('click', ()=> movePiece(entry.id, +1));
+
+  const alignBtn=document.createElement('button'); alignBtn.textContent='Align'; alignBtn.className='ghost';
+  alignBtn.addEventListener('click', ()=>{
+    if(!baseMesh) return alert('원본 업로드 필요');
+    if(entry.pixelW===baseMesh.userData.pixelWidth && entry.pixelH===baseMesh.userData.pixelHeight){
+      entry.group.position.set(0,0,0.002);
+    } else { alert('픽셀 크기 불일치'); }
+  });
+
+  const removeBtn=document.createElement('button'); removeBtn.textContent='Remove'; removeBtn.className='ghost';
+  removeBtn.addEventListener('click', ()=> removePiece(entry.id));
+
+  btns.appendChild(upBtn); btns.appendChild(downBtn); btns.appendChild(alignBtn); btns.appendChild(removeBtn);
+
+  div.appendChild(order); div.appendChild(img); div.appendChild(meta); div.appendChild(btns);
+  piecesListEl.appendChild(div);
+}
+
+function refreshOrderBadges(){
+  pieces.forEach((p,i)=>{
+    const row=document.getElementById('piece-'+p.id);
+    const badge=row?.querySelector('.orderBadge');
+    if(badge) badge.textContent=String(i+1);
+    if(p.group) p.group.position.z = 0.001 + i*0.0004;
+  });
+}
+function movePiece(id, dir){
+  const idx=pieces.findIndex(p=>p.id===id);
+  const j=idx+dir;
+  if(idx<0 || j<0 || j>=pieces.length) return;
+  [pieces[idx], pieces[j]] = [pieces[j], pieces[idx]];
+
+  const nodeA = document.getElementById('piece-'+pieces[j].id);
+  const nodeB = document.getElementById('piece-'+pieces[idx].id);
+  if(nodeA && nodeB){
+    if(dir<0){ piecesListEl.insertBefore(nodeA, nodeB); }
+    else{ piecesListEl.insertBefore(nodeB, nodeA); }
+  }
+  refreshOrderBadges();
+}
+function removePiece(id){
+  const idx=pieces.findIndex(p=>p.id===id);
+  if(idx===-1) return;
+  const e=pieces[idx];
+  scene.remove(e.group);
+  try{ e.texture?.dispose(); }catch(ex){}
+  if(e.bodyMesh && e.bodyMesh.geometry) e.bodyMesh.geometry.dispose();
+  if(e.frontPlane && e.frontPlane.geometry) e.frontPlane.geometry.dispose();
+  pieces.splice(idx,1);
+  const el=document.getElementById('piece-'+id); if(el) el.remove();
+  refreshOrderBadges();
+}
+
+/* ---------- Sequence (pieces only) ---------- */
+async function popAndFadeEntry(entry){
+  const fadeDur = parseFloat(document.getElementById('fadeDuration').value) || 0.5;
+  const group = entry.group;
+  const startZ = group.position.z;
+  const extra = 0.12; // 살짝 튀는 연출
+  const peakZ = startZ + extra;
+  const halfMs = fadeDur * 1000;
+
+  entry.frontPlane.material.transparent = true;
+  entry.bodyMesh.material.transparent = true;
+  entry.frontPlane.material.opacity = 0;
+  entry.bodyMesh.material.opacity = 0;
+
+  const t0 = performance.now();
+  return new Promise(resolve=>{
+    function frame(now){
+      const t = now - t0;
+      if(t < halfMs){
+        const p = t/halfMs; const eased = 1 - Math.pow(1-p,3);
+        group.position.z = THREE.MathUtils.lerp(startZ, peakZ, eased);
+        const op = THREE.MathUtils.lerp(0,1,eased);
+        entry.frontPlane.material.opacity = op;
+        entry.bodyMesh.material.opacity = op*0.95;
+        requestAnimationFrame(frame);
+      } else if(t < 2*halfMs){
+        const p = (t-halfMs)/halfMs; const eased = 1 - Math.pow(p,3);
+        group.position.z = THREE.MathUtils.lerp(startZ, peakZ, eased);
+        const op = THREE.MathUtils.lerp(0,1,eased);
+        entry.frontPlane.material.opacity = op;
+        entry.bodyMesh.material.opacity = op*0.95;
+        requestAnimationFrame(frame);
+      } else {
+        group.position.z = startZ;
+        entry.frontPlane.material.opacity = 1;
+        entry.bodyMesh.material.opacity = 1;
+        resolve();
+      }
+    }
+    requestAnimationFrame(frame);
+  });
+}
+async function startSequence(){
+  if(animRunning) return;
+  if(pieces.length===0){ alert('조각을 먼저 업로드하세요.'); return; }
+  animRunning = true;
+
+  const loop = document.getElementById('seqLoop').checked;
+  const gapSec = parseFloat(document.getElementById('seqInterval').value) || 0.6;
+
+  while(animRunning){
+    for(let i=0;i<pieces.length && animRunning;i++){
+      await popAndFadeEntry(pieces[i]);
+      if(!animRunning) break;
+      await sleep(gapSec*1000);
+    }
+    if(!loop) break;
+  }
+  animRunning = false;
+}
+
+/* ---------- Alternate (Base↔Pieces in same view) ---------- */
+function setBaseOpacity(op){ if(baseMesh){ baseMesh.material.opacity = op; } }
+function setBaseVisible(v){ if(baseMesh){ baseMesh.visible = v; } }
+function setPieceOpacity(entry, op){
+  entry.frontPlane.material.opacity = op;
+  entry.bodyMesh.material.opacity  = Math.min(1, op*0.95);
+}
+function setPieceVisible(entry, v){ entry.group.visible = v; }
+
+function hideAll(){
+  if(baseMesh){ setBaseOpacity(0); setBaseVisible(false); }
+  for(const p of pieces){ setPieceOpacity(p, 0); setPieceVisible(p, false); }
+}
+async function crossFade(fromObj, toObj){
+  const fadeDur = parseFloat(document.getElementById('fadeDuration').value) || 0.5;
+  const ms = Math.max(50, fadeDur*1000);
+  const t0 = performance.now();
+
+  if(fromObj){ fromObj.setVisible(true); }
+  if(toObj){ toObj.setVisible(true); }
+
+  return new Promise(resolve=>{
+    function frame(now){
+      const t = now - t0;
+      const p = Math.min(1, t/ms);
+      const easedIn  = 1 - Math.pow(1-p,3);
+      const easedOut = 1 - easedIn;
+
+      if(fromObj){ fromObj.setOpacity(easedOut); }
+      if(toObj){   toObj.setOpacity(easedIn);  }
+
+      if(p < 1){ requestAnimationFrame(frame); }
+      else {
+        if(fromObj){ fromObj.setOpacity(0); fromObj.setVisible(false); }
+        if(toObj){   toObj.setOpacity(1); toObj.setVisible(true); }
+        resolve();
+      }
+    }
+    requestAnimationFrame(frame);
+  });
+}
+function makeBaseRenderable(){ return { setOpacity: setBaseOpacity, setVisible: setBaseVisible }; }
+function makePieceRenderable(entry){
+  return { setOpacity: (op)=> setPieceOpacity(entry, op), setVisible: (v)=> setPieceVisible(entry, v) };
+}
+async function startAlternate(){
+  if(animRunning) return;
+  if(!baseMesh){ alert('원본 이미지를 먼저 업로드하세요.'); return; }
+  if(pieces.length===0){ alert('조각을 1개 이상 업로드하세요.'); return; }
+  animRunning = true;
+
+  const loop = document.getElementById('seqLoop').checked;
+  const gapSec = parseFloat(document.getElementById('seqInterval').value) || 0.6;
+  const baseR = makeBaseRenderable();
+
+  while(animRunning){
+    for(let i=0;i<pieces.length && animRunning;i++){
+      hideAll();
+      await crossFade(null, baseR); // Base fade-in
+      if(!animRunning) break;
+      await sleep(gapSec*1000);
+
+      const pieceR = makePieceRenderable(pieces[i]);
+      await crossFade(baseR, pieceR); // Base→Piece i
+      if(!animRunning) break;
+      await sleep(gapSec*1000);
+    }
+    if(!loop) break;
+  }
+  hideAll(); setBaseVisible(true); setBaseOpacity(1);
+  animRunning = false;
+}
+
+/* ---------- Stereo (left/right) ---------- */
+function applyEyeLayers(){
+  // 어떤 눈에 Base/Pieces를 보낼지
+  const baseLayer = mapBaseToLeft ? LAYER_LEFT : LAYER_RIGHT;
+  const pieceLayer= mapBaseToLeft ? LAYER_RIGHT : LAYER_LEFT;
+
+  // Base
+  if(baseMesh){ baseMesh.layers.set(baseLayer); baseMesh.visible = true; setBaseOpacity(1); }
+
+  // Pieces는 일단 모노로 두고, 활성화 시 pieceLayer로 올림
+  pieces.forEach(p=>{ p.group.layers.set(LAYER_MONO); p.group.visible=false; });
+
+  // VR 카메라 좌/우 레이어 필터
+  if(inVR){
+    const xrCam = renderer.xr.getCamera(camera);
+    const cams = xrCam?.cameras || [];
+    if(cams.length >= 2){
+      const camL = cams[0], camR = cams[1];
+      camL.layers.disableAll(); camR.layers.disableAll();
+      camL.layers.enable(LAYER_LEFT);
+      camR.layers.enable(LAYER_RIGHT);
+    }
+  }
+
+  // PC Split 프리뷰 설정
+  if(!inVR){
+    if(splitPreview){ setSplitLoop(); }
+    else { setNormalLoop(); }
+  }
+}
+function setActivePieceForStereo(idx){
+  const pieceLayer= mapBaseToLeft ? LAYER_RIGHT : LAYER_LEFT;
+  pieces.forEach((p,j)=>{
+    if(j===idx){
+      p.group.layers.set(pieceLayer);
+      p.group.visible = true;
+      p.frontPlane.material.opacity = 1;
+      p.bodyMesh.material.opacity  = 0.95;
+    }else{
+      p.group.layers.set(LAYER_MONO);
+      p.group.visible = false;
+      p.frontPlane.material.opacity = 0;
+      p.bodyMesh.material.opacity  = 0;
+    }
+  });
+}
+async function startStereoAlternate(){
+  if(animRunning) return;
+  if(!baseMesh){ alert('원본 이미지를 먼저 업로드하세요.'); return; }
+  if(pieces.length===0){ alert('조각을 1개 이상 업로드하세요.'); return; }
+  animRunning = true;
+
+  applyEyeLayers(); // 매핑 반영
+  const loop = document.getElementById('seqLoop').checked;
+  const gapSec = parseFloat(document.getElementById('seqInterval').value) || 0.6;
+
+  // Split 미리보기 켰는데 활성 조각이 없다면 미리 0번 보여주기
+  if(splitPreview && !inVR){ setActivePieceForStereo(0); }
+
+  while(animRunning){
+    for(let i=0;i<pieces.length && animRunning;i++){
+      setActivePieceForStereo(i);
+      await sleep(gapSec*1000);
+    }
+    if(!loop) break;
+  }
+  // 종료: 조각 숨기고 Base만
+  pieces.forEach(p=>{ p.group.visible=false; });
+  if(baseMesh){ baseMesh.visible=true; }
+  animRunning = false;
+}
+
+/* ---------- UI Wiring ---------- */
+function hookUI(){
+  const popDepth = document.getElementById('popDepth');
+  const popDepthVal = document.getElementById('popDepthVal');
+  popDepth.addEventListener('input', ()=> popDepthVal.textContent = (+popDepth.value).toFixed(2));
+
+  const fadeDuration = document.getElementById('fadeDuration');
+  const fadeDurationVal = document.getElementById('fadeDurationVal');
+  fadeDuration.addEventListener('input', ()=> fadeDurationVal.textContent = (+fadeDuration.value).toFixed(2)+'s');
+
+  const seqInterval = document.getElementById('seqInterval');
+  const seqIntervalVal = document.getElementById('seqIntervalVal');
+  seqInterval.addEventListener('input', ()=> seqIntervalVal.textContent = (+seqInterval.value).toFixed(2)+'s');
+
+  document.getElementById('baseFile').addEventListener('change', async (e)=>{
+    const f=e.target.files && e.target.files[0];
+    if(!f) return;
+    await setBaseImage(f);
+    e.target.value='';
+  });
+
+  document.getElementById('piecesFiles').addEventListener('change', async (e)=>{
+    const list = Array.from(e.target.files || []);
+    for(const f of list){ if(pieces.length>=20){ alert('최대 20개 제한'); break; } await addPieceFile(f); }
+    e.target.value='';
+  });
+
+  document.getElementById('btnPlaceAll').addEventListener('click', ()=>{
+    if(!baseMesh) return alert('원본 업로드 필요');
+    const bw=baseMesh.userData.pixelWidth, bh=baseMesh.userData.pixelHeight;
+    for(const p of pieces){ if(p.pixelW===bw && p.pixelH===bh) p.group.position.set(0,0,0.002); }
+  });
+
+  document.getElementById('btnClear').addEventListener('click', ()=>{
+    for(const p of pieces){ scene.remove(p.group); try{ p.texture?.dispose(); }catch(e){} }
+    pieces=[]; piecesListEl.innerHTML=''; refreshOrderBadges();
+  });
+
+  document.getElementById('btnPlaySeq').addEventListener('click', ()=> startSequence());
+  document.getElementById('btnPlayAlternate').addEventListener('click', ()=> startAlternate());
+  document.getElementById('btnPlayStereoAlt').addEventListener('click', ()=> startStereoAlternate());
+  document.getElementById('btnStop').addEventListener('click', ()=> { animRunning=false; });
+
+  // Stereo 매핑
+  document.getElementsByName('eyeMap').forEach(r=>{
+    r.addEventListener('change', ()=>{
+      mapBaseToLeft = (document.querySelector('input[name="eyeMap"]:checked')?.value === 'baseLeft');
+      applyEyeLayers();
+    });
+  });
+
+  // PC Split 프리뷰 토글
+  const pcSplit = document.getElementById('pcSplit');
+  pcSplit.addEventListener('change', ()=>{
+    splitPreview = pcSplit.checked;
+    applyEyeLayers();
+    // 미리보기 켜고 조각 존재하면 0번을 잠깐 띄워 확인 가능
+    if(splitPreview && pieces.length>0){ setActivePieceForStereo(0); }
+  });
+
+  // 초기 표시값/프리뷰 반영
+  popDepthVal.textContent = (+popDepth.value).toFixed(2);
+  fadeDurationVal.textContent = (+fadeDuration.value).toFixed(2)+'s';
+  seqIntervalVal.textContent = (+seqInterval.value).toFixed(2)+'s';
+  splitPreview = pcSplit.checked;
+  if(splitPreview){ applyEyeLayers(); setSplitLoop(); }
+  else { setNormalLoop(); }
+
+  // 수동 VR 버튼
+  enterVrBtn.addEventListener('click', async ()=>{
+    if(renderer.xr.isPresenting){
+      const s = renderer.xr.getSession(); await s.end(); return;
+    }
+    if(!('xr' in navigator)){ alert('이 브라우저는 WebXR을 지원하지 않습니다.'); return; }
+    try{
+      const supported = await navigator.xr.isSessionSupported('immersive-vr');
+      if(!supported){ alert('immersive-vr 미지원'); return; }
+      const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures:['local-floor','dom-overlay'], domOverlay:{root:document.body} });
+      renderer.xr.setSession(session);
+    }catch(err){ console.error(err); alert('VR 시작 실패: HTTPS/localhost 및 호환 브라우저인지 확인하세요.'); }
+  });
+}
+
+/* ---------- WebXR availability ---------- */
+async function checkWebXRAvailability(){
+  if(navigator.xr && navigator.xr.isSessionSupported){
+    try{
+      const supported = await navigator.xr.isSessionSupported('immersive-vr');
+      enterVrBtn.disabled = !supported;
+      if(!supported) console.info('immersive-vr not supported.');
+    }catch(e){ enterVrBtn.disabled = true; console.warn('XR check failed', e); }
+  } else {
+    enterVrBtn.disabled = true;
+    console.info('WebXR API not available.');
+  }
+}
+</script>
+</body>
+</html>
